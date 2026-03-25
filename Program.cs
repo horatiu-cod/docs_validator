@@ -77,7 +77,6 @@ builder.Services.AddCors(options =>
 });
 
 // ── OpenAPI (built-in .NET 9) ──────────────────────────────────────────────────
-// builder.Services.AddOpenApi();
 
 // ─────────────────────────────────────────────────────────────────────────────
 var app = builder.Build();
@@ -120,7 +119,7 @@ using (var scope = app.Services.CreateScope())
     try
     {
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        db.Database.Migrate();
+        await db.Database.MigrateAsync();
     }
     catch (Exception ex)
     {
