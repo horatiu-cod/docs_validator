@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using DocsValidator.Data;
 using DocsValidator.Models;
 using DocsValidator.Services;
@@ -12,40 +11,32 @@ public static class AuthenticationEndpoints
     {
         var group = app.MapGroup("/api/auth").WithName("Authentication");
 
-        // Register a new user
-        group.MapPost("/register", Register)
-            .WithName("Register");
-
-        // Login
-        group.MapPost("/login", Login)
-            .WithName("Login");
-
-        // Get current user
-        group.MapGet("/me", GetCurrentUser)
-            .WithName("GetCurrentUser")
-            .RequireAuthorization();
+        group.MapPost("/register", Register).WithName("Register");
+        group.MapPost("/login", Login).WithName("Login");
+        group.MapGet("/me", GetCurrentUser).WithName("GetCurrentUser").RequireAuthorization();
     }
 
     private static async Task<IResult> Register(
-        HttpContext httpContext,
         RegisterRequest request,
         IAuthenticationService authenticationService,
         ApplicationDbContext context)
     {
-        if (string.IsNullOrEmpty(request.Username) || string.IsNullOrEmpty(request.Password) || string.IsNullOrEmpty(request.Email))
+        if (string.IsNullOrWhiteSpace(request.Username) ||
+            string.IsNullOrWhiteSpace(request.Password) ||
+            string.IsNullOrWhiteSpace(request.Email))
             return Results.BadRequest("Username, password, and email are required");
 
-        // Check if user already exists
-        var existingUser = await context.Users.FirstOrDefaultAsync(u => u.Username == request.Username || u.Email == request.Email);
-        if (existingUser != null)
-            return Results.BadRequest("User already exists");
-
-        if (!Enum.TryParse<UserRole>(request.Role, true, out var role))
+        if (!Enum.TryParse<UserRole>(request.Role, ignoreCase: true, out var role))
             return Results.BadRequest("Invalid role");
+
+        var existingUser = await context.Users
+            .AnyAsync(u => u.Username == request.Username || u.Email == request.Email);
+
+        if (existingUser)
+            return Results.BadRequest("User already exists");
 
         var user = new User
         {
-            Id = Guid.NewGuid(),
             Username = request.Username,
             Email = request.Email,
             PasswordHash = authenticationService.HashPassword(request.Password),
@@ -68,23 +59,23 @@ public static class AuthenticationEndpoints
     }
 
     private static async Task<IResult> Login(
-        HttpContext httpContext,
         LoginRequest request,
         IAuthenticationService authenticationService,
         ApplicationDbContext context)
     {
-        if (string.IsNullOrEmpty(request.Username) || string.IsNullOrEmpty(request.Password))
+        if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
             return Results.BadRequest("Username and password are required");
 
         var user = await context.Users.FirstOrDefaultAsync(u => u.Username == request.Username);
         if (user == null)
             return Results.Unauthorized();
 
-        if (!authenticationService.VerifyPassword(request.Password, user.PasswordHash))
-            return Results.Unauthorized();
-
+        // Check active status before running the bcrypt hash comparison
         if (!user.IsActive)
             return Results.BadRequest("User account is inactive");
+
+        if (!authenticationService.VerifyPassword(request.Password, user.PasswordHash))
+            return Results.Unauthorized();
 
         var token = authenticationService.GenerateJwtToken(user);
         return Results.Ok(new
@@ -101,11 +92,13 @@ public static class AuthenticationEndpoints
         HttpContext httpContext,
         ApplicationDbContext context)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
-        var user = await context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
 
-        if (user == null)
-            return Results.NotFound();
+        var user = await context.Users.AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Id == userId);
+
+        if (user == null) return Results.NotFound();
 
         return Results.Ok(new
         {

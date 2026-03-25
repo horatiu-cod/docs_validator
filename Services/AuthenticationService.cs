@@ -1,8 +1,10 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using DocsValidator.Models;
+using DocsValidator.Settings;
 
 namespace DocsValidator.Services;
 
@@ -15,17 +17,19 @@ public interface IAuthenticationService
 
 public class AuthenticationService : IAuthenticationService
 {
-    private readonly IConfiguration _configuration;
+    private readonly JwtSettings _jwtSettings;
 
-    public AuthenticationService(IConfiguration configuration)
+    public AuthenticationService(IOptions<JwtSettings> jwtOptions)
     {
-        _configuration = configuration;
+        _jwtSettings = jwtOptions.Value;
+
+        if (string.IsNullOrEmpty(_jwtSettings.SecretKey))
+            throw new InvalidOperationException("JWT SecretKey is not configured");
     }
 
     public string GenerateJwtToken(User user)
     {
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(
-            _configuration["Jwt:SecretKey"] ?? throw new InvalidOperationException("JWT SecretKey not configured")));
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.SecretKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
         var claims = new[]
@@ -37,10 +41,10 @@ public class AuthenticationService : IAuthenticationService
         };
 
         var token = new JwtSecurityToken(
-            issuer: _configuration["Jwt:Issuer"],
-            audience: _configuration["Jwt:Audience"],
+            issuer: _jwtSettings.Issuer,
+            audience: _jwtSettings.Audience,
             claims: claims,
-            expires: DateTime.UtcNow.AddHours(24),
+            expires: DateTime.UtcNow.AddHours(_jwtSettings.ExpiryHours),
             signingCredentials: credentials
         );
 
@@ -48,12 +52,8 @@ public class AuthenticationService : IAuthenticationService
     }
 
     public bool VerifyPassword(string password, string hash)
-    {
-        return BCrypt.Net.BCrypt.Verify(password, hash);
-    }
+        => BCrypt.Net.BCrypt.Verify(password, hash);
 
     public string HashPassword(string password)
-    {
-        return BCrypt.Net.BCrypt.HashPassword(password);
-    }
+        => BCrypt.Net.BCrypt.HashPassword(password);
 }

@@ -1,39 +1,33 @@
-using System.Security.Claims;
-using DocsValidator.Data;
 using DocsValidator.Models;
 using DocsValidator.Services;
-using Microsoft.EntityFrameworkCore;
 
 namespace DocsValidator.Endpoints;
 
 public static class DocumentEndpoints
 {
+    private const long MaxFileSizeBytes = 100L * 1024 * 1024; // 100 MB
+
     public static void MapDocumentEndpoints(this WebApplication app)
     {
         var group = app.MapGroup("/api/documents").WithName("Documents");
 
-        // Upload document
         group.MapPost("/upload", UploadDocument)
             .WithName("UploadDocument")
             .Accepts<IFormFile>("multipart/form-data")
             .RequireAuthorization();
 
-        // Download document
         group.MapGet("/{documentId}/download", DownloadDocument)
             .WithName("DownloadDocument")
             .RequireAuthorization();
 
-        // Get document details
         group.MapGet("/{documentId}", GetDocument)
             .WithName("GetDocument")
             .RequireAuthorization();
 
-        // List user documents
         group.MapGet("/", ListUserDocuments)
             .WithName("ListUserDocuments")
             .RequireAuthorization();
 
-        // Get document validation status
         group.MapGet("/{documentId}/validation-status", GetValidationStatus)
             .WithName("GetValidationStatus")
             .RequireAuthorization();
@@ -45,36 +39,35 @@ public static class DocumentEndpoints
         IDocumentStorageService documentStorageService,
         IWorkflowService workflowService,
         IClamAVService clamAVService,
-        IDigitalSignatureValidationService signatureService)
+        IDigitalSignatureValidationService signatureService,
+        ILoggerFactory loggerFactory)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
-        var file = form.Files[0];
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
 
-        if (file == null || file.Length == 0)
+        var file = form.Files.Count > 0 ? form.Files[0] : null;
+        if (file is null || file.Length == 0)
             return Results.BadRequest("No file provided");
 
-        if (file.Length > 100 * 1024 * 1024) // 100MB limit
-            return Results.BadRequest("File size exceeds 100MB limit");
+        if (file.Length > MaxFileSizeBytes)
+            return Results.BadRequest("File size exceeds 100 MB limit");
 
         try
         {
-            // Upload document
             using var stream = file.OpenReadStream();
             var document = await documentStorageService.UploadDocumentAsync(
                 stream,
                 file.FileName,
-                userId,
+                userId.Value,
                 hasDigitalSignature: bool.TryParse(form["hasDigitalSignature"], out var sig) && sig,
                 signatureOwner: form["signatureOwner"].ToString()
             );
 
-            // Initiate workflow
-            var workflow = await workflowService.InitiateWorkflowAsync(document.Id, userId);
-
-            // Add validation step
+            // Initiate workflow and add the first validation step
+            var workflow = await workflowService.InitiateWorkflowAsync(document.Id, userId.Value);
             await workflowService.AddValidationStepAsync(workflow.Id);
 
-            // Scan with ClamAV
+            // The file bytes are already on disk; read them once for downstream scanning
             var fileContent = await File.ReadAllBytesAsync(document.FilePath);
             var (isClean, details) = await clamAVService.ScanFileAsync(fileContent, document.StoredFileName);
             await documentStorageService.UpdateDocumentValidationAsync(document.Id, isClean, details ?? "No details");
@@ -88,10 +81,8 @@ public static class DocumentEndpoints
             // Validate digital signature if present
             if (document.HasDigitalSignature && !string.IsNullOrEmpty(document.SignatureOwner))
             {
-                var (isValidSignature, owner) = await signatureService.ValidateDigitalSignatureAsync(
-                    fileContent,
-                    document.SignatureOwner
-                );
+                var (isValidSignature, _) = await signatureService.ValidateDigitalSignatureAsync(
+                    fileContent, document.SignatureOwner);
 
                 if (!isValidSignature)
                 {
@@ -115,7 +106,8 @@ public static class DocumentEndpoints
         }
         catch (Exception ex)
         {
-            
+            loggerFactory.CreateLogger(nameof(DocumentEndpoints))
+                .LogError(ex, "Unexpected error uploading document for user {UserId}", userId);
             return Results.StatusCode(500);
         }
     }
@@ -126,11 +118,10 @@ public static class DocumentEndpoints
         IDocumentStorageService documentStorageService,
         IAuthorizationService authorizationService)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
 
-        // Check authorization
-        var canAccess = await authorizationService.CanAccessDocumentAsync(userId, documentId);
-        if (!canAccess)
+        if (!await authorizationService.CanAccessDocumentAsync(userId.Value, documentId))
             return Results.Forbid();
 
         try
@@ -150,15 +141,14 @@ public static class DocumentEndpoints
         IDocumentStorageService documentStorageService,
         IAuthorizationService authorizationService)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
 
-        var canAccess = await authorizationService.CanAccessDocumentAsync(userId, documentId);
-        if (!canAccess)
+        if (!await authorizationService.CanAccessDocumentAsync(userId.Value, documentId))
             return Results.Forbid();
 
         var document = await documentStorageService.GetDocumentAsync(documentId);
-        if (document == null)
-            return Results.NotFound();
+        if (document == null) return Results.NotFound();
 
         return Results.Ok(new
         {
@@ -178,9 +168,10 @@ public static class DocumentEndpoints
         HttpContext httpContext,
         IDocumentStorageService documentStorageService)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
 
-        var documents = await documentStorageService.GetUserDocumentsAsync(userId);
+        var documents = await documentStorageService.GetUserDocumentsAsync(userId.Value);
         return Results.Ok(documents.Select(d => new
         {
             d.Id,
@@ -198,15 +189,14 @@ public static class DocumentEndpoints
         IDocumentStorageService documentStorageService,
         IAuthorizationService authorizationService)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
 
-        var canAccess = await authorizationService.CanAccessDocumentAsync(userId, documentId);
-        if (!canAccess)
+        if (!await authorizationService.CanAccessDocumentAsync(userId.Value, documentId))
             return Results.Forbid();
 
         var document = await documentStorageService.GetDocumentAsync(documentId);
-        if (document == null)
-            return Results.NotFound();
+        if (document == null) return Results.NotFound();
 
         return Results.Ok(new
         {

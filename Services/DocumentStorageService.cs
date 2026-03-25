@@ -7,7 +7,7 @@ namespace DocsValidator.Services;
 public interface IDocumentStorageService
 {
     Task<Document> UploadDocumentAsync(Stream fileStream, string fileName, Guid uploadedById, bool hasDigitalSignature, string? signatureOwner);
-    Task<(byte[], string)> DownloadDocumentAsync(Guid documentId);
+    Task<(byte[] Content, string FileName)> DownloadDocumentAsync(Guid documentId);
     Task<Document?> GetDocumentAsync(Guid documentId);
     Task<List<Document>> GetUserDocumentsAsync(Guid userId);
     Task UpdateDocumentValidationAsync(Guid documentId, bool isClean, string scanResult);
@@ -39,68 +39,64 @@ public class DocumentStorageService : IDocumentStorageService
         bool hasDigitalSignature,
         string? signatureOwner)
     {
-        // Validate file extension
         if (!_fileValidationService.IsValidPdfExtension(fileName))
             throw new InvalidOperationException("Only PDF files are allowed");
 
-        // Create storage directory if it doesn't exist
-        var storagePath = _configuration["FileStorage:Path"] ?? throw new InvalidOperationException("FileStorage:Path not configured");
+        var storagePath = _configuration["FileStorage:Path"]
+            ?? throw new InvalidOperationException("FileStorage:Path not configured");
+
         var uploadDir = Path.Combine(storagePath, "uploads");
         Directory.CreateDirectory(uploadDir);
 
-        // Generate secure filename
         var secureFileName = _fileValidationService.GenerateSecureFileName(fileName);
         var filePath = Path.Combine(uploadDir, secureFileName);
 
-        // Read file content
-        using (var memoryStream = new MemoryStream())
+        // Buffer the stream once; reuse the bytes for hashing and persisting
+        using var memoryStream = new MemoryStream();
+        await fileStream.CopyToAsync(memoryStream);
+        var fileContent = memoryStream.ToArray();
+
+        await File.WriteAllBytesAsync(filePath, fileContent);
+
+        var document = new Document
         {
-            await fileStream.CopyToAsync(memoryStream);
-            var fileContent = memoryStream.ToArray();
+            UploadedById = uploadedById,
+            OriginalFileName = fileName,
+            StoredFileName = secureFileName,
+            FilePath = filePath,
+            FileSize = fileContent.Length,
+            FileHash = _fileValidationService.CalculateFileHash(fileContent),
+            HasDigitalSignature = hasDigitalSignature,
+            SignatureOwner = signatureOwner,
+            IsCleanAccordingToClamAV = false // Updated after scanning
+        };
 
-            // Save file to disk
-            await System.IO.File.WriteAllBytesAsync(filePath, fileContent);
+        _context.Documents.Add(document);
+        await _context.SaveChangesAsync();
 
-            // Create document record
-            var document = new Document
-            {
-                Id = Guid.NewGuid(),
-                UploadedById = uploadedById,
-                OriginalFileName = fileName,
-                StoredFileName = secureFileName,
-                FilePath = filePath,
-                FileSize = fileContent.Length,
-                FileHash = _fileValidationService.CalculateFileHash(fileContent),
-                HasDigitalSignature = hasDigitalSignature,
-                SignatureOwner = signatureOwner,
-                UploadedAt = DateTime.UtcNow,
-                IsCleanAccordingToClamAV = false // Will be updated after scanning
-            };
+        _logger.LogInformation("Document {DocumentId} uploaded: {OriginalFileName} -> {StoredFileName}",
+            document.Id, fileName, secureFileName);
 
-            _context.Documents.Add(document);
-            await _context.SaveChangesAsync();
-
-            _logger.LogInformation($"Document {document.Id} uploaded: {fileName} -> {secureFileName}");
-            return document;
-        }
+        return document;
     }
 
-    public async Task<(byte[], string)> DownloadDocumentAsync(Guid documentId)
+    public async Task<(byte[] Content, string FileName)> DownloadDocumentAsync(Guid documentId)
     {
         var document = await _context.Documents.FirstOrDefaultAsync(d => d.Id == documentId);
         if (document == null)
             throw new InvalidOperationException("Document not found");
 
-        if (!System.IO.File.Exists(document.FilePath))
+        if (!File.Exists(document.FilePath))
             throw new InvalidOperationException("File not found on disk");
 
-        var fileContent = await System.IO.File.ReadAllBytesAsync(document.FilePath);
+        var fileContent = await File.ReadAllBytesAsync(document.FilePath);
         return (fileContent, document.OriginalFileName);
     }
 
     public async Task<Document?> GetDocumentAsync(Guid documentId)
     {
         return await _context.Documents
+            .AsNoTracking()
             .Include(d => d.UploadedBy)
             .FirstOrDefaultAsync(d => d.Id == documentId);
     }
@@ -108,6 +104,7 @@ public class DocumentStorageService : IDocumentStorageService
     public async Task<List<Document>> GetUserDocumentsAsync(Guid userId)
     {
         return await _context.Documents
+            .AsNoTracking()
             .Where(d => d.UploadedById == userId)
             .Include(d => d.UploadedBy)
             .ToListAsync();
@@ -123,9 +120,9 @@ public class DocumentStorageService : IDocumentStorageService
         document.ClamAVScanResult = scanResult;
         document.ClamAVScanDate = DateTime.UtcNow;
 
-        _context.Documents.Update(document);
+        // EF tracks the entity fetched above; no need to call Update() explicitly
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation($"Document {documentId} validation updated: Clean={isClean}");
+        _logger.LogInformation("Document {DocumentId} validation updated: Clean={IsClean}", documentId, isClean);
     }
 }

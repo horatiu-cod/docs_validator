@@ -29,23 +29,21 @@ public class WorkflowService : IWorkflowService
 
     public async Task<Workflow> InitiateWorkflowAsync(Guid documentId, Guid createdById)
     {
-        var document = await _context.Documents.FirstOrDefaultAsync(d => d.Id == documentId);
-        if (document == null)
+        var documentExists = await _context.Documents.AnyAsync(d => d.Id == documentId);
+        if (!documentExists)
             throw new InvalidOperationException("Document not found");
 
         var workflow = new Workflow
         {
-            Id = Guid.NewGuid(),
             DocumentId = documentId,
             CreatedById = createdById,
-            Status = WorkflowStatus.Pending,
-            CreatedAt = DateTime.UtcNow
+            Status = WorkflowStatus.Pending
         };
 
         _context.Workflows.Add(workflow);
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation($"Workflow {workflow.Id} initiated for document {documentId}");
+        _logger.LogInformation("Workflow {WorkflowId} initiated for document {DocumentId}", workflow.Id, documentId);
         return workflow;
     }
 
@@ -61,23 +59,20 @@ public class WorkflowService : IWorkflowService
         var stepNumber = workflow.Steps.Count + 1;
         var step = new WorkflowStep
         {
-            Id = Guid.NewGuid(),
             WorkflowId = workflowId,
             StepNumber = stepNumber,
-            StepType = "Validation",
-            Status = WorkflowStatus.Pending,
-            CreatedAt = DateTime.UtcNow
+            StepType = StepType.Validation,
+            Status = WorkflowStatus.Pending
         };
 
         _context.WorkflowSteps.Add(step);
 
-        // Update workflow status
+        // Update workflow status – EF tracks the loaded entity; no explicit Update() needed
         workflow.Status = WorkflowStatus.Validating;
-        _context.Workflows.Update(workflow);
 
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation($"Validation step {stepNumber} added to workflow {workflowId}");
+        _logger.LogInformation("Validation step {StepNumber} added to workflow {WorkflowId}", stepNumber, workflowId);
         return step;
     }
 
@@ -96,22 +91,19 @@ public class WorkflowService : IWorkflowService
 
         var approval = new WorkflowApproval
         {
-            Id = Guid.NewGuid(),
             WorkflowId = workflowId,
             AssignedToId = validatorId,
-            AssignedAt = DateTime.UtcNow,
-            IsApproved = false
+            IsApproved = null // null = pending decision
         };
 
         _context.WorkflowApprovals.Add(approval);
 
-        // Update workflow status
+        // EF tracks the loaded workflow; no explicit Update() needed
         workflow.Status = WorkflowStatus.AwaitingApproval;
-        _context.Workflows.Update(workflow);
 
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation($"Validator {validatorId} assigned to workflow {workflowId}");
+        _logger.LogInformation("Validator {ValidatorId} assigned to workflow {WorkflowId}", validatorId, workflowId);
         return approval;
     }
 
@@ -130,9 +122,11 @@ public class WorkflowService : IWorkflowService
 
         var workflow = approval.Workflow;
 
-        // Check if all approvals are complete
+        // Count pending approvals using local EF tracking state (IsApproved is already set above
+        // in memory, so CountAsync on the DB would still see the old value – query the DB for
+        // remaining pending approvals excluding the current one).
         var pendingApprovals = await _context.WorkflowApprovals
-            .Where(a => a.WorkflowId == workflow.Id && !a.IsApproved)
+            .Where(a => a.WorkflowId == workflow.Id && a.Id != approvalId && a.IsApproved == null)
             .CountAsync();
 
         if (pendingApprovals == 0)
@@ -141,11 +135,10 @@ public class WorkflowService : IWorkflowService
             workflow.CompletedAt = DateTime.UtcNow;
         }
 
-        _context.WorkflowApprovals.Update(approval);
-        _context.Workflows.Update(workflow);
+        // EF tracks both entities; no explicit Update() calls needed
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation($"Workflow {workflow.Id} approved");
+        _logger.LogInformation("Approval {ApprovalId} for workflow {WorkflowId} accepted", approvalId, workflow.Id);
         return true;
     }
 
@@ -159,16 +152,17 @@ public class WorkflowService : IWorkflowService
         workflow.RejectionReason = reason;
         workflow.CompletedAt = DateTime.UtcNow;
 
-        _context.Workflows.Update(workflow);
+        // EF tracks the loaded entity; no explicit Update() needed
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation($"Workflow {workflowId} rejected: {reason}");
+        _logger.LogInformation("Workflow {WorkflowId} rejected: {Reason}", workflowId, reason);
         return true;
     }
 
     public async Task<Workflow?> GetWorkflowAsync(Guid workflowId)
     {
         return await _context.Workflows
+            .AsNoTracking()
             .Include(w => w.Steps)
             .Include(w => w.Approvals)
             .FirstOrDefaultAsync(w => w.Id == workflowId);
@@ -177,6 +171,7 @@ public class WorkflowService : IWorkflowService
     public async Task<List<Workflow>> GetUserWorkflowsAsync(Guid userId)
     {
         return await _context.Workflows
+            .AsNoTracking()
             .Where(w => w.CreatedById == userId || w.Approvals.Any(a => a.AssignedToId == userId))
             .Include(w => w.Steps)
             .Include(w => w.Approvals)
@@ -185,7 +180,12 @@ public class WorkflowService : IWorkflowService
 
     public async Task<WorkflowStatus> GetWorkflowStatusAsync(Guid workflowId)
     {
-        var workflow = await _context.Workflows.FirstOrDefaultAsync(w => w.Id == workflowId);
-        return workflow?.Status ?? WorkflowStatus.Pending;
+        var status = await _context.Workflows
+            .AsNoTracking()
+            .Where(w => w.Id == workflowId)
+            .Select(w => (WorkflowStatus?)w.Status)
+            .FirstOrDefaultAsync();
+
+        return status ?? WorkflowStatus.Pending;
     }
 }

@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using DocsValidator.Models;
 using DocsValidator.Services;
 
@@ -10,32 +9,26 @@ public static class WorkflowEndpoints
     {
         var group = app.MapGroup("/api/workflows").WithName("Workflows");
 
-        // Assign validator to workflow
         group.MapPost("/{workflowId}/assign-validator", AssignValidator)
             .WithName("AssignValidator")
             .RequireAuthorization();
 
-        // Get workflow details
         group.MapGet("/{workflowId}", GetWorkflow)
             .WithName("GetWorkflow")
             .RequireAuthorization();
 
-        // List user workflows
         group.MapGet("/", ListUserWorkflows)
             .WithName("ListUserWorkflows")
             .RequireAuthorization();
 
-        // Approve workflow
         group.MapPost("/approvals/{approvalId}/approve", ApproveWorkflow)
             .WithName("ApproveWorkflow")
             .RequireAuthorization();
 
-        // Reject workflow
         group.MapPost("/{workflowId}/reject", RejectWorkflow)
             .WithName("RejectWorkflow")
             .RequireAuthorization();
 
-        // Get workflow status
         group.MapGet("/{workflowId}/status", GetWorkflowStatus)
             .WithName("GetWorkflowStatus")
             .RequireAuthorization();
@@ -45,11 +38,12 @@ public static class WorkflowEndpoints
         Guid workflowId,
         HttpContext httpContext,
         AssignValidatorRequest request,
-        IWorkflowService workflowService,
-        IAuthorizationService authorizationService)
+        IWorkflowService workflowService)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
-        var userRole = httpContext.User.FindFirst(ClaimTypes.Role)?.Value;
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
+
+        var userRole = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
 
         // Only administrators and experts can assign validators
         if (userRole != UserRole.Administrator.ToString() && userRole != UserRole.Expert.ToString())
@@ -75,24 +69,22 @@ public static class WorkflowEndpoints
     private static async Task<IResult> GetWorkflow(
         Guid workflowId,
         HttpContext httpContext,
-        IWorkflowService workflowService,
-        IAuthorizationService authorizationService)
+        IWorkflowService workflowService)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
 
         var workflow = await workflowService.GetWorkflowAsync(workflowId);
-        if (workflow == null)
-            return Results.NotFound();
+        if (workflow == null) return Results.NotFound();
 
-        // Check if user can access this workflow
-        var canAccess = workflow.CreatedById == userId ||
-                       workflow.Approvals.Any(a => a.AssignedToId == userId);
-        if (!canAccess)
-        {
-            var userRole = httpContext.User.FindFirst(ClaimTypes.Role)?.Value;
-            if (userRole != UserRole.Administrator.ToString())
-                return Results.Forbid();
-        }
+        // Allow access to the creator, any assigned approver, or an administrator
+        var userRole = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+        var isAdmin = userRole == UserRole.Administrator.ToString();
+        var canAccess = isAdmin ||
+                        workflow.CreatedById == userId ||
+                        workflow.Approvals.Any(a => a.AssignedToId == userId);
+
+        if (!canAccess) return Results.Forbid();
 
         return Results.Ok(new
         {
@@ -127,9 +119,10 @@ public static class WorkflowEndpoints
         HttpContext httpContext,
         IWorkflowService workflowService)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
 
-        var workflows = await workflowService.GetUserWorkflowsAsync(userId);
+        var workflows = await workflowService.GetUserWorkflowsAsync(userId.Value);
         return Results.Ok(workflows.Select(w => new
         {
             w.Id,
@@ -147,15 +140,14 @@ public static class WorkflowEndpoints
         IWorkflowService workflowService,
         IAuthorizationService authorizationService)
     {
-        var userId = Guid.Parse(httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? string.Empty);
+        var userId = EndpointHelpers.GetUserId(httpContext);
+        if (userId is null) return Results.Unauthorized();
 
-        var canApprove = await authorizationService.CanApproveWorkflowAsync(userId, approvalId);
-        if (!canApprove)
+        if (!await authorizationService.CanApproveWorkflowAsync(userId.Value, approvalId))
             return Results.Forbid();
 
         var success = await workflowService.ApproveWorkflowAsync(approvalId, request.Comment ?? string.Empty);
-        if (!success)
-            return Results.NotFound();
+        if (!success) return Results.NotFound();
 
         return Results.Ok(new { message = "Workflow approved successfully" });
     }
@@ -163,18 +155,17 @@ public static class WorkflowEndpoints
     private static async Task<IResult> RejectWorkflow(
         Guid workflowId,
         HttpContext httpContext,
+        RejectWorkflowRequest request,
         IWorkflowService workflowService)
     {
-        var userRole = httpContext.User.FindFirst(ClaimTypes.Role)?.Value;
+        var userRole = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
 
         // Only administrators can reject workflows
         if (userRole != UserRole.Administrator.ToString())
             return Results.Forbid();
 
-        var request = new RejectWorkflowRequest(Reason :"Rejected by administrator");
         var success = await workflowService.RejectWorkflowAsync(workflowId, request.Reason);
-        if (!success)
-            return Results.NotFound();
+        if (!success) return Results.NotFound();
 
         return Results.Ok(new { message = "Workflow rejected successfully" });
     }

@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 
 namespace DocsValidator.Services;
 
@@ -13,7 +12,6 @@ public interface IFileValidationService
 public class FileValidationService : IFileValidationService
 {
     private const string AllowedExtension = ".pdf";
-    private const int MaxFileNameLength = 255;
 
     public bool IsValidPdfExtension(string fileName)
     {
@@ -23,22 +21,19 @@ public class FileValidationService : IFileValidationService
 
     public string GenerateSecureFileName(string originalFileName)
     {
-        // Generate a secure filename using GUID and original extension
         var extension = Path.GetExtension(originalFileName).ToLowerInvariant();
         if (extension != AllowedExtension)
             throw new InvalidOperationException("Invalid file extension. Only PDF files are allowed.");
 
-        var secureFileName = $"{Guid.NewGuid():N}{extension}";
-        return secureFileName;
+        return $"{Guid.NewGuid():N}{extension}";
     }
 
+    /// <summary>Returns a base-64 encoded SHA-256 hash of the file content.</summary>
     public string CalculateFileHash(byte[] fileContent)
     {
-        using (var sha256 = SHA256.Create())
-        {
-            var hashBytes = sha256.ComputeHash(fileContent);
-            return Convert.ToBase64String(hashBytes);
-        }
+        // SHA256.HashData is a one-shot, allocation-efficient static method (available since .NET 5)
+        var hashBytes = SHA256.HashData(fileContent);
+        return Convert.ToBase64String(hashBytes);
     }
 }
 
@@ -51,16 +46,12 @@ public class DigitalSignatureValidationService : IDigitalSignatureValidationServ
 {
     public async Task<(bool IsValid, string? SignatureOwner)> ValidateDigitalSignatureAsync(byte[] fileContent, string expectedOwner)
     {
-        // This would integrate with actual PDF signature validation
-        // For now, we'll return a placeholder implementation
-        await Task.CompletedTask;
-
-        // In a real implementation, you would:
-        // 1. Parse the PDF for signature dictionary
+        // Placeholder – a real implementation would:
+        // 1. Parse the PDF signature dictionary
         // 2. Extract the certificate
         // 3. Validate the signature cryptographically
-        // 4. Extract the certificate owner name
-
+        // 4. Return the certificate owner name
+        await Task.CompletedTask;
         return (true, expectedOwner);
     }
 }
@@ -90,26 +81,24 @@ public class ClamAVService : IClamAVService
             var clamAvUrl = _configuration["ClamAV:Url"];
             if (string.IsNullOrEmpty(clamAvUrl))
             {
-                _logger.LogWarning("ClamAV URL not configured. Skipping scan.");
+                _logger.LogWarning("ClamAV URL not configured. Skipping scan for {FileName}", fileName);
                 return (true, "ClamAV not configured");
             }
 
-            using (var content = new MultipartFormDataContent())
-            {
-                content.Add(new ByteArrayContent(fileContent), "file", fileName);
+            using var content = new MultipartFormDataContent();
+            content.Add(new ByteArrayContent(fileContent), "file", fileName);
 
-                var response = await _httpClient.PostAsync($"{clamAvUrl}/scan", content);
-                var responseContent = await response.Content.ReadAsStringAsync();
+            var response = await _httpClient.PostAsync($"{clamAvUrl}/scan", content);
+            var responseContent = await response.Content.ReadAsStringAsync();
 
-                // Parse ClamAV response (CLEAN or INFECTED message)
-                var isClean = responseContent.Contains("CLEAN");
-                return (isClean, responseContent);
-            }
+            // Parse ClamAV response (CLEAN or INFECTED message)
+            var isClean = responseContent.Contains("CLEAN", StringComparison.OrdinalIgnoreCase);
+            return (isClean, responseContent);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error scanning file with ClamAV");
-            // Fail secure - mark as potentially unclean if scanning fails
+            _logger.LogError(ex, "Error scanning file {FileName} with ClamAV", fileName);
+            // Fail secure – mark as potentially unclean if scanning fails
             return (false, $"Scan error: {ex.Message}");
         }
     }

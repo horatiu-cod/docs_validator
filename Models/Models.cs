@@ -34,6 +34,13 @@ public enum WorkflowStatus
     Completed
 }
 
+public enum StepType
+{
+    Validation,
+    Approval,
+    Signing
+}
+
 public class User
 {
     public Guid Id { get; set; }
@@ -101,7 +108,7 @@ public class WorkflowStep
     public Guid WorkflowId { get; set; }
     public Workflow Workflow { get; set; } = null!;
     public int StepNumber { get; set; }
-    public string StepType { get; set; } = string.Empty; // Validation, Approval, Signing, etc.
+    public StepType StepType { get; set; } = StepType.Validation;
     public WorkflowStatus Status { get; set; } = WorkflowStatus.Pending;
     public string? Result { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -115,7 +122,8 @@ public class WorkflowApproval
     public Workflow Workflow { get; set; } = null!;
     public Guid AssignedToId { get; set; }
     public User AssignedTo { get; set; } = null!;
-    public bool IsApproved { get; set; }
+    /// <summary>null = pending, true = approved, false = rejected</summary>
+    public bool? IsApproved { get; set; }
     public string? ApprovalComment { get; set; }
     public DateTime AssignedAt { get; set; } = DateTime.UtcNow;
     public DateTime? ApprovedAt { get; set; }
