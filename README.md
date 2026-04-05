@@ -13,6 +13,7 @@ A comprehensive .NET minimal API application for validating, managing, and appro
   - ClamAV antivirus scanning
   - Secure file naming to prevent exploits
   - File hash calculation for integrity verification
+- **Notifications & Email**: Configurable email notifications (SMTP or external providers) are sent on workflow events (initiation, validator assignment, completion).
 - **Workflow Management**: Multi-step workflow for document approval and validation
 - **Permission System**:
   - Scopes: CanRead, CanWrite, CanDelete, CanUpdate, CanValidate
@@ -48,7 +49,7 @@ DocsValidator/
 
 ### Prerequisites
 
-- .NET 8.0 SDK
+- .NET 9.0 SDK or higher
 - SQL Server (LocalDB or full version)
 - Optional: ClamAV server for virus scanning
 
@@ -72,6 +73,29 @@ DocsValidator/
      "DefaultConnection": "Server=YOUR_SERVER;Database=DocsValidator;..."
    }
    ```
+
+4. **Optional - Configure Email (recommended for notifications):**
+   Add an Email section to `appsettings.json` or configure via environment/Key Vault. Example:
+
+   ```json
+   "Email": {
+     "Provider": "Smtp",
+     "Smtp": {
+       "Host": "smtp.example.com",
+       "Port": 587,
+       "UseTls": true,
+       "Username": "your-email@example.com",
+       "Password": "app-password",
+       "FromAddress": "noreply@yourdomain.com",
+       "FromName": "Docs Validator"
+     },
+     "Retries": 3,
+     "RetryDelaySeconds": 60,
+     "TimeoutSeconds": 30
+   }
+   ```
+
+   Store credentials securely (User Secrets for local dev or Azure Key Vault in production).
 
 4. **Apply migrations:**
    ```bash
@@ -167,12 +191,12 @@ The API will be available at `https://localhost:7001`
 
 1. **User Authentication**: User logs in to the system
 2. **Document Upload**: User uploads a digitally signed PDF and assigns a validator
-3. **Workflow Initiation**: System creates a workflow and initiates validation
+3. **Workflow Initiation**: System creates a workflow and initiates validation (the document owner receives an email notification if email is configured)
 4. **File Validation**:
    - Extension validation (must be PDF)
    - ClamAV antivirus scanning
    - Digital signature validation
-5. **Approval Assignment**: System notifies assigned validator
+5. **Approval Assignment**: System notifies assigned validator via email (if configured)
 6. **Validator Review**: Validator downloads, reviews, and signs the document
 7. **Approval**: Validator approves or rejects the document
 8. **Completion**: If approved, workflow is completed; if rejected, process stops

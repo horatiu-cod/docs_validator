@@ -20,17 +20,19 @@ public class WorkflowService : IWorkflowService
 {
     private readonly ApplicationDbContext _context;
     private readonly ILogger<WorkflowService> _logger;
+    private readonly INotificationService _notificationService;
 
-    public WorkflowService(ApplicationDbContext context, ILogger<WorkflowService> logger)
+    public WorkflowService(ApplicationDbContext context, ILogger<WorkflowService> logger, INotificationService notificationService)
     {
         _context = context;
         _logger = logger;
+        _notificationService = notificationService;
     }
 
     public async Task<Workflow> InitiateWorkflowAsync(Guid documentId, Guid createdById)
     {
-        var documentExists = await _context.Documents.AnyAsync(d => d.Id == documentId);
-        if (!documentExists)
+        var document = await _context.Documents.Include(d => d.UploadedBy).FirstOrDefaultAsync(d => d.Id == documentId);
+        if (document == null)
             throw new InvalidOperationException("Document not found");
 
         var workflow = new Workflow
@@ -44,6 +46,25 @@ public class WorkflowService : IWorkflowService
         await _context.SaveChangesAsync();
 
         _logger.LogInformation("Workflow {WorkflowId} initiated for document {DocumentId}", workflow.Id, documentId);
+
+        // Notify document owner that a workflow was initiated
+        try
+        {
+            var notification = new Notification
+            {
+                Email = document.UploadedBy.Email,
+                Subject = "Workflow started for your document",
+                Body = $"A workflow (ID: {workflow.Id}) was started for your document '{document.OriginalFileName}'.",
+                Type = NotificationType.Generic
+            };
+
+            await _notificationService.SendNotificationAsync(notification);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send workflow-start notification for workflow {WorkflowId}", workflow.Id);
+        }
+
         return workflow;
     }
 
@@ -104,6 +125,25 @@ public class WorkflowService : IWorkflowService
         await _context.SaveChangesAsync();
 
         _logger.LogInformation("Validator {ValidatorId} assigned to workflow {WorkflowId}", validatorId, workflowId);
+
+        // Notify the validator that they have been assigned
+        try
+        {
+            var notification = new Notification
+            {
+                Email = validator.Email,
+                Subject = "You have been assigned a document to validate",
+                Body = $"You have been assigned to validate workflow {workflowId} for document ID {workflow.DocumentId}.",
+                Type = NotificationType.Generic
+            };
+
+            await _notificationService.SendNotificationAsync(notification);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send validator assignment notification for workflow {WorkflowId}", workflowId);
+        }
+
         return approval;
     }
 
@@ -139,6 +179,24 @@ public class WorkflowService : IWorkflowService
         await _context.SaveChangesAsync();
 
         _logger.LogInformation("Approval {ApprovalId} for workflow {WorkflowId} accepted", approvalId, workflow.Id);
+
+        // If workflow completed, notify document owner
+        if (workflow.Status == WorkflowStatus.Completed)
+        {
+            try
+            {
+                var document = await _context.Documents.Include(d => d.UploadedBy).FirstOrDefaultAsync(d => d.Id == workflow.DocumentId);
+                if (document != null)
+                {
+                    await _notificationService.SendDocumentApprovedEmailAsync(document.UploadedBy.Email, document.OriginalFileName);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send document approved notification for workflow {WorkflowId}", workflow.Id);
+            }
+        }
+
         return true;
     }
 

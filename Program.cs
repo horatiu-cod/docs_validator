@@ -17,6 +17,9 @@ builder.Logging.AddConsole();
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
+// ── Email ────────────────────────────────────────────────────────────────────────────────────────────
+builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
+
 // ── JWT / Authentication ──────────────────────────────────────────────────────
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
 
@@ -62,6 +65,7 @@ builder.Services.AddScoped<IDigitalSignatureValidationService, DigitalSignatureV
 builder.Services.AddScoped<IDocumentStorageService, DocumentStorageService>();
 builder.Services.AddScoped<IWorkflowService, WorkflowService>();
 builder.Services.AddHttpClient<IClamAVService, ClamAVService>();
+builder.Services.AddScoped<INotificationService, EmailService>();
 
 // ── CORS ───────────────────────────────────────────────────────────────────────
 builder.Services.AddCors(options =>

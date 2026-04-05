@@ -14,11 +14,32 @@
    dotnet restore
    ```
 
-3. **Configure Database**
+3. **Configure Database & Email**
    - Edit `appsettings.json`:
      - Update connection string if not using LocalDB
      - Update JWT secret (minimum 32 characters)
      - Set file storage path
+     - Configure Email settings (SMTP or external provider). Example:
+
+       ```json
+       "Email": {
+         "Provider": "Smtp",
+         "Smtp": {
+           "Host": "smtp.example.com",
+           "Port": 587,
+           "UseTls": true,
+           "Username": "your-email@example.com",
+           "Password": "app-password",
+           "FromAddress": "noreply@yourdomain.com",
+           "FromName": "Docs Validator"
+         },
+         "Retries": 3,
+         "RetryDelaySeconds": 60,
+         "TimeoutSeconds": 30
+       }
+       ```
+
+     - Store SMTP credentials securely (User Secrets for local dev or Azure Key Vault in production).
 
 4. **Create Database**
    ```bash
@@ -67,12 +88,16 @@ POST /api/auth/register
    ```
    Save the `workflowId`
 
+   Note: When a workflow is initiated the document owner will receive an email notification (if email is configured).
+
 3. **Assign Validator**
    ```bash
    POST /api/workflows/{workflowId}/assign-validator
    Headers: Authorization: Bearer {token}
    Body: {"validatorId":"<validator-user-id>"}
    ```
+
+   Note: The assigned validator will receive an email notification with the assignment details.
 
 4. **Login as Validator**
    - Get validator token
@@ -83,6 +108,8 @@ POST /api/auth/register
    Headers: Authorization: Bearer {validator-token}
    Body: {"comment":"Document approved"}
    ```
+
+   Note: When the workflow completes the document owner will receive a notification email.
 
 ## Key Concepts
 
