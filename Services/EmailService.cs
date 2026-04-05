@@ -1,5 +1,3 @@
-using System;
-using System.Threading.Tasks;
 using DocsValidator.Models;
 using DocsValidator.Settings;
 using MailKit.Net.Smtp;
@@ -40,6 +38,47 @@ namespace DocsValidator.Services
         public async Task<bool> SendNotificationAsync(Notification notification)
         {
             return await SendEmailAsync(notification.Email, notification.Subject, notification.Body);
+        }
+
+        public async Task<bool> SendDocumentApprovedEmailWithAttachmentAsync(string email, string documentName, string attachmentPath, string? overrideRecipient = null)
+        {
+            var to = string.IsNullOrEmpty(overrideRecipient) ? email : overrideRecipient;
+
+            if (string.IsNullOrEmpty(attachmentPath) || !File.Exists(attachmentPath))
+            {
+                // Fallback to simple notification if attachment missing
+                return await SendDocumentApprovedEmailAsync(to, documentName);
+            }
+
+            var message = new MimeMessage();
+            message.From.Add(new MailboxAddress(_settings.Smtp.FromName, _settings.Smtp.FromAddress));
+            message.To.Add(MailboxAddress.Parse(to));
+            message.Subject = "Document Approved";
+
+            var builder = new BodyBuilder();
+            builder.HtmlBody = $"Your document '{documentName}' has been approved.";
+
+            // Attach the file
+            try
+            {
+                var fileName = Path.GetFileName(attachmentPath);
+                using var fs = File.OpenRead(attachmentPath);
+                builder.Attachments.Add(fileName, fs);
+
+                message.Body = builder.ToMessageBody();
+
+                using var client = new SmtpClient();
+                await client.ConnectAsync(_settings.Smtp.Host, _settings.Smtp.Port, _settings.Smtp.UseTls);
+                await client.AuthenticateAsync(_settings.Smtp.Username, _settings.Smtp.Password);
+                await client.SendAsync(message);
+                await client.DisconnectAsync(true);
+                return true;
+            }
+            catch (Exception)
+            {
+                // TODO: Add logging
+                return false;
+            }
         }
 
         private async Task<bool> SendEmailAsync(string to, string subject, string body)

@@ -1,6 +1,8 @@
 using DocsValidator.Data;
 using DocsValidator.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using System.IO;
 
 namespace DocsValidator.Services;
 
@@ -21,12 +23,14 @@ public class WorkflowService : IWorkflowService
     private readonly ApplicationDbContext _context;
     private readonly ILogger<WorkflowService> _logger;
     private readonly INotificationService _notificationService;
+    private readonly IConfiguration _configuration;
 
-    public WorkflowService(ApplicationDbContext context, ILogger<WorkflowService> logger, INotificationService notificationService)
+    public WorkflowService(ApplicationDbContext context, ILogger<WorkflowService> logger, INotificationService notificationService, IConfiguration configuration)
     {
         _context = context;
         _logger = logger;
         _notificationService = notificationService;
+        _configuration = configuration;
     }
 
     public async Task<Workflow> InitiateWorkflowAsync(Guid documentId, Guid createdById)
@@ -188,7 +192,21 @@ public class WorkflowService : IWorkflowService
                 var document = await _context.Documents.Include(d => d.UploadedBy).FirstOrDefaultAsync(d => d.Id == workflow.DocumentId);
                 if (document != null)
                 {
-                    await _notificationService.SendDocumentApprovedEmailAsync(document.UploadedBy.Email, document.OriginalFileName);
+                    // Determine approved recipient (optional override)
+                    var approvedRecipient = _configuration["Notifications:ApprovedRecipient"];
+
+                    // Resolve attachment path: if stored path is relative, combine with FileStorage:Path
+                    var attachmentPath = document.FilePath ?? string.Empty;
+                    if (!Path.IsPathRooted(attachmentPath))
+                    {
+                        var storagePath = _configuration["FileStorage:Path"] ?? string.Empty;
+                        if (!string.IsNullOrEmpty(storagePath))
+                        {
+                            attachmentPath = Path.Combine(storagePath, attachmentPath);
+                        }
+                    }
+
+                    await _notificationService.SendDocumentApprovedEmailWithAttachmentAsync(document.UploadedBy.Email, document.OriginalFileName, attachmentPath, approvedRecipient);
                 }
             }
             catch (Exception ex)

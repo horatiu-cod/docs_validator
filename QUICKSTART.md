@@ -46,6 +46,14 @@
    dotnet ef database update
    ```
 
+   Optional: configure the notifications recipient for approved documents in `appsettings.json`:
+
+   ```json
+   "Notifications": {
+     "ApprovedRecipient": "approvals@yourdomain.com"
+   }
+   ```
+
 5. **Run Application**
    ```bash
    dotnet run

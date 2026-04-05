@@ -52,5 +52,6 @@ description: create an app as per instructions
 4. file is validated. status of file changing. if the file is not validated will be not uploaded. warning notice will be issued.
 5. if the file is validated and stored, the assigned validator is noticed to validate and approve the file. status of file changing
 6. assigned validator will download the file, and sign the file. will upload the file to the server. file is validated.. status of file changing. if is necessary will assign another validator to approve the file. if not the workflow is finished.
-5. the proces continue until file is approved.
+7. the proces continue until file is approved.
+8. After the file is approved, an email with the file as an attachment is sent to a specific address (configurable via Notifications:ApprovedRecipient).
 

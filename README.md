@@ -97,6 +97,14 @@ DocsValidator/
 
    Store credentials securely (User Secrets for local dev or Azure Key Vault in production).
 
+   Optional: configure the notifications recipient for approved documents in `appsettings.json`:
+
+   ```json
+   "Notifications": {
+     "ApprovedRecipient": "approvals@yourdomain.com"
+   }
+   ```
+
 4. **Apply migrations:**
    ```bash
    dotnet ef database update
