@@ -1,8 +1,6 @@
 using DocsValidator.Data;
 using DocsValidator.Models;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using System.IO;
 
 namespace DocsValidator.Services;
 
